@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-import joblib
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.svm import LinearSVC
@@ -14,80 +13,8 @@ from sklearn.metrics import (
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import GridSearchCV
 from time import time
+from preproc import load_data, create_text_pipeline
 
-# Define dataset paths
-splits = {
-    'train': 'data/train-00000-of-00001.parquet',
-    'validation': 'data/validation-00000-of-00001.parquet'
-}
-
-def load_data():
-    """Load train and validation datasets"""
-    print("Loading datasets...")
-    # Load the datasets
-    base_path = "hf://datasets/stanfordnlp/sst2/"
-    df_train = pd.read_parquet(base_path + splits["train"])
-    df_val = pd.read_parquet(base_path + splits["validation"])
-    
-    # Extract features and labels
-    X_train, y_train = df_train['sentence'], df_train['label']
-    X_val, y_val = df_val['sentence'], df_val['label']
-    
-    print(f"Train set size: {len(X_train)} samples")
-    print(f"Validation set size: {len(X_val)} samples")
-    
-    # Display class distribution
-    print("\nClass distribution:")
-    print("Training set:", pd.Series(y_train).value_counts().to_dict())
-    print("Validation set:", pd.Series(y_val).value_counts().to_dict())
-    
-    return X_train, y_train, X_val, y_val
-
-def create_text_pipeline(classifier_type="svm", vectorizer_type="tfidf", use_stop_words=True):
-    """Create a text processing and classification pipeline
-    
-    Args:
-        classifier_type (str): Type of classifier to use - "svm" or "rf"
-        vectorizer_type (str): Type of vectorizer to use - "tfidf" or "bow"
-        use_stop_words (bool): Whether to use stop words filtering
-    """
-    # Common vectorizer parameters
-    vectorizer_params = {
-        'min_df': 5,  # Minimum document frequency
-        'max_df': 0.8,  # Maximum document frequency (to remove very common words)
-    }
-    
-    # Handle stop words
-    if not use_stop_words:
-        vectorizer_params['stop_words'] = 'english'
-    
-    # Select vectorizer based on type
-    if vectorizer_type.lower() == "tfidf":
-        vectorizer = TfidfVectorizer(**vectorizer_params)
-        vectorizer_suffix = "tfidf"
-    else:  # Default to Bag of Words
-        vectorizer = CountVectorizer(**vectorizer_params)
-        vectorizer_suffix = "bow"
-    
-    # Select classifier based on type
-    if classifier_type.lower() == "svm":
-        classifier = LinearSVC(dual="auto", class_weight='balanced')
-        classifier_suffix = "svm"
-    else:  # Default to Random Forest
-        classifier = RandomForestClassifier(class_weight='balanced')
-        classifier_suffix = "rf"
-    
-    # Create a pipeline with preprocessing and model
-    pipeline = Pipeline([
-        ('vectorizer', vectorizer),
-        ('classifier', classifier)
-    ])
-    
-    # Create a model name suffix based on configuration
-    stop_words_suffix = "no_stop" if not use_stop_words else "with_stop"
-    model_suffix = f"{classifier_suffix}_{vectorizer_suffix}_{stop_words_suffix}"
-    
-    return pipeline, model_suffix
 
 def train_model(X_train, y_train, classifier_type="svm", vectorizer_type="tfidf", use_stop_words=True):
     """Train the model with hyperparameter tuning"""
@@ -103,7 +30,7 @@ def train_model(X_train, y_train, classifier_type="svm", vectorizer_type="tfidf"
         param_grid = {
             'classifier__n_estimators': [100, 200],
             'classifier__max_depth': [None, 10, 20],
-            'classifier__min_samples_split': [2, 5]
+            'classifier__min_samples_split': [2, 5],
         }
     
     stop_words_msg = "without" if use_stop_words else "with"
@@ -136,28 +63,21 @@ def compute_metrics(y_true, y_pred):
     # Get confusion matrix components
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
     
-    # Calculate all metrics
-    total = tn + fp + fn + tp
-    accuracy = (tp + tn) / total
-    error_rate = (fp + fn) / total
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-    mcc_denominator = np.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
-    mcc = ((tp * tn) - (fp * fn)) / mcc_denominator if mcc_denominator > 0 else 0
-    
-    return {
+    # Metrics
+    metrics = {
         'TP': tp,
         'TN': tn,
         'FP': fp,
         'FN': fn,
-        'Accuracy': accuracy,           # nää pitää ehk kyl implementoida kirjastol eikä manuaalisesti
-        'Error Rate': error_rate,
-        'Precision': precision,
-        'Recall': recall,
-        'F1 Score': f1,
-        'MCC': mcc
+        'Accuracy': accuracy_score(y_true, y_pred),
+        'Error Rate': 1 - accuracy_score(y_true, y_pred),
+        'Precision': precision_score(y_true, y_pred, zero_division=0),
+        'Recall': recall_score(y_true, y_pred, zero_division=0),
+        'F1 Score': f1_score(y_true, y_pred, zero_division=0),
+        'MCC': matthews_corrcoef(y_true, y_pred)
     }
+    
+    return metrics
 
 def evaluate_model(model, X_val, y_val, model_suffix):
     """Evaluate the model performance"""
@@ -180,9 +100,6 @@ def evaluate_model(model, X_val, y_val, model_suffix):
     plt.title(f'Confusion Matrix - {model_suffix}')
     plt.tight_layout()
     plt.savefig(f'confusion_matrix_{model_suffix}.png')
-    
-    # Save the model
-    joblib.dump(model, f"{model_suffix}.pkl")
     
     return metrics
 

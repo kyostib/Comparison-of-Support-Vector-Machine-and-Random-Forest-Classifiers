@@ -10,6 +10,8 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import GridSearchCV
 from sklearn.preprocessing import StandardScaler
+from collections import Counter
+import re
 from time import time
 
 # Define dataset paths
@@ -17,6 +19,18 @@ splits = {
     'train': 'data/train-00000-of-00001.parquet',
     'validation': 'data/validation-00000-of-00001.parquet'
 }
+
+def tokenize(text):
+    """Basic tokenizer that lowercases and extracts words"""
+    return re.findall(r'\b[a-z]{2,}\b', text.lower())
+
+def build_custom_stopwords(corpus, top_n=50):
+    """Build a stopword list of the most frequent words in the training corpus"""
+    word_counts = Counter()
+    for doc in corpus:
+        tokens = tokenize(doc)
+        word_counts.update(tokens)
+    return set([word for word, _ in word_counts.most_common(top_n)])
 
 def load_data():
     """Load train and validation datasets"""
@@ -40,24 +54,29 @@ def load_data():
     
     return X_train, y_train, X_val, y_val
 
-def create_text_pipeline(vectorizer_type="tfidf"):
+def create_text_pipeline(vectorizer_type="tfidf", stop_words=None):
     """Create a text processing and classification pipeline
     
     Args:
         vectorizer_type (str): Type of vectorizer to use - "tfidf" or "bow"
     """
     # Common vectorizer parameters
-    vectorizer_params = {
+    vectorizer_params_tfidf = {
         'min_df': 5,  # Minimum document frequency
-        'max_df': 0.8,  # Maximum document frequency (to remove very common words)
+        'max_df': 0.5,  # Maximum document frequency (to remove very common words)
+        'stop_words': stop_words
+    }
+
+    vectorizer_params_bow = {
+        'stop_words': stop_words
     }
     
     # Select vectorizer based on type
     if vectorizer_type.lower() == "tfidf":
-        vectorizer = TfidfVectorizer(**vectorizer_params)
+        vectorizer = TfidfVectorizer(**vectorizer_params_tfidf)
         model_suffix = "tfidf"
     else:  # Default to Bag of Words
-        vectorizer = CountVectorizer(**vectorizer_params)
+        vectorizer = CountVectorizer(**vectorizer_params_bow)
         model_suffix = "bow"
     
     # Create a pipeline with preprocessing and model
@@ -68,9 +87,9 @@ def create_text_pipeline(vectorizer_type="tfidf"):
     
     return pipeline, model_suffix
 
-def train_model(X_train, y_train, X_val, y_val, vectorizer_type="tfidf"):
+def train_model(X_train, y_train, X_val, y_val, vectorizer_type="tfidf", stop_words=None):
     """Train the model with hyperparameter tuning"""
-    pipeline, model_suffix = create_text_pipeline(vectorizer_type)
+    pipeline, model_suffix = create_text_pipeline(vectorizer_type, stop_words=stop_words)
     
     # Define parameter grid for GridSearchCV
     param_grid = {
@@ -168,21 +187,23 @@ def main():
     """Main function to execute the entire workflow"""
     print("Starting sentiment analysis with SVM classification...")
     vectorizer_type = "bow"
+
     # Load data
     X_train, y_train, X_val, y_val = load_data()
+
+    custom_stopwords = build_custom_stopwords(X_train, top_n=0)
+    print(f"\nCustom stopwords: {sorted(custom_stopwords)[:10]}...")
     
     # Train model
-    best_model, model_suffix = train_model(X_train, y_train, X_val, y_val, vectorizer_type)
+    best_model, model_suffix = train_model(X_train, y_train, X_val, y_val, vectorizer_type, list(custom_stopwords))
     
     # Evaluate model
     val_accuracy, error_rate, mcc = evaluate_model(best_model, X_val, y_val)
-    
-    # Save model
-    save_model(best_model)
+
     
     # Final report
     print("\n===== Final Report =====")
-    print(f"Model: LinearSVC with TF-IDF features")
+    print(f"Model: LinearSVC with {vectorizer_type} features")
     print(f"Validation Accuracy: {val_accuracy:.4f}")
     print(f"Error Rate: {error_rate:.4f}")
     print(f"Matthews Correlation Coefficient: {mcc:.4f}")

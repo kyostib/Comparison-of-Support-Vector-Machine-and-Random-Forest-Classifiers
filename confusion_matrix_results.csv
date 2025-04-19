@@ -1,0 +1,9 @@
+Model,TP,FN,FP,TN
+"SVM (TFIDF, Stop Words: No)",377,67,88,340
+"SVM (TFIDF, Stop Words: Yes)",377,67,109,319
+"SVM (BOW, Stop Words: No)",381,63,93,335
+"SVM (BOW, Stop Words: Yes)",376,68,111,317
+"RF (TFIDF, Stop Words: No)",331,113,101,327
+"RF (TFIDF, Stop Words: Yes)",347,97,114,314
+"RF (BOW, Stop Words: No)",345,99,108,320
+"RF (BOW, Stop Words: Yes)",374,70,162,266
