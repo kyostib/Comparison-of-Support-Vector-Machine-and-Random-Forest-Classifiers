@@ -225,6 +225,15 @@ def visualize_results(results):
         for r in results
     ])
     
+    # Create a configuration string for each row
+    df_results['config_str'] = df_results.apply(
+        lambda row: f"{row['vectorizer_type']}_" + 
+                   f"{row['stopwords_option']}_" + 
+                   (f"{int(row['stopwords_count'])}_" if row['stopwords_option'] == 'custom' else "") + 
+                   f"C{row['c_value']}", 
+        axis=1
+    )
+    
     # Plot accuracy by configuration
     plt.figure(figsize=(15, 10))
     
@@ -250,15 +259,6 @@ def visualize_results(results):
     # Plot comparing all configurations
     plt.figure(figsize=(20, 10))
     
-    # Create a configuration string for each row
-    df_results['config_str'] = df_results.apply(
-        lambda row: f"{row['vectorizer_type']}_" + 
-                   f"{row['stopwords_option']}_" + 
-                   (f"{int(row['stopwords_count'])}_" if row['stopwords_option'] == 'custom' else "") + 
-                   f"C{row['c_value']}", 
-        axis=1
-    )
-    
     # Sort by accuracy
     df_results = df_results.sort_values('accuracy')
     
@@ -272,7 +272,59 @@ def visualize_results(results):
     plt.grid(True, alpha=0.3)
     plt.savefig('accuracy_by_configuration.png')
     
-    print("Visualizations saved as PNG files.")
+    # NEW: Plot top 10 models by accuracy
+    plt.figure(figsize=(16, 8))
+    top10_acc = df_results.sort_values('accuracy', ascending=False).head(10)
+    
+    # Create a horizontal bar chart
+    ax = sns.barplot(data=top10_acc, y='config_str', x='accuracy', palette='viridis')
+    plt.title('Top 10 Models by Accuracy', fontsize=16)
+    plt.xlabel('Accuracy', fontsize=12)
+    plt.ylabel('Configuration', fontsize=12)
+    
+    # Add accuracy values as text
+    for i, v in enumerate(top10_acc['accuracy']):
+        ax.text(v + 0.001, i, f' {v:.4f}', va='center')
+    
+    plt.tight_layout()
+    plt.grid(True, alpha=0.3, axis='x')
+    plt.savefig('top10_models_by_accuracy.png')
+    print("Top 10 models by accuracy visualization saved")
+    
+    # NEW: Plot top 10 models by MCC
+    plt.figure(figsize=(16, 8))
+    top10_mcc = df_results.sort_values('mcc', ascending=False).head(10)
+    
+    # Create a horizontal bar chart
+    ax = sns.barplot(data=top10_mcc, y='config_str', x='mcc', palette='plasma')
+    plt.title('Top 10 Models by Matthews Correlation Coefficient', fontsize=16)
+    plt.xlabel('MCC', fontsize=12)
+    plt.ylabel('Configuration', fontsize=12)
+    
+    # Add MCC values as text
+    for i, v in enumerate(top10_mcc['mcc']):
+        ax.text(v + 0.001, i, f' {v:.4f}', va='center')
+    
+    plt.tight_layout()
+    plt.grid(True, alpha=0.3, axis='x')
+    plt.savefig('top10_models_by_mcc.png')
+    print("Top 10 models by MCC visualization saved")
+    
+    # NEW: Generate a table with top 10 models by accuracy
+    print("\nTop 10 Models by Accuracy:")
+    top10_acc_table = top10_acc[['config_str', 'accuracy', 'mcc', 'train_time']]
+    print(top10_acc_table.to_string(index=False))
+    
+    # NEW: Generate a table with top 10 models by MCC
+    print("\nTop 10 Models by MCC:")
+    top10_mcc_table = top10_mcc[['config_str', 'mcc', 'accuracy', 'train_time']]
+    print(top10_mcc_table.to_string(index=False))
+    
+    # Export top models data to CSV
+    top10_acc.to_csv('top10_models_by_accuracy.csv', index=False)
+    top10_mcc.to_csv('top10_models_by_mcc.csv', index=False)
+    
+    print("Visualizations and data files saved.")
     
     return df_results
 
@@ -339,6 +391,11 @@ def save_reports(all_reports, filename='all_classification_reports.json'):
     
     print(f"All classification reports saved to {filename}")
 
+def save_all_models_report(df_results, filename='all_models_comparison.csv'):
+    """Save all model results to a CSV file for further analysis"""
+    df_results.sort_values('accuracy', ascending=False).to_csv(filename, index=False)
+    print(f"Full models comparison saved to {filename}")
+
 def main():
     """Main function to execute the entire workflow"""
     print("Starting sentiment analysis model optimization...")
@@ -361,21 +418,53 @@ def main():
     # Save all classification reports
     save_reports(all_reports)
     
+    # Save full model comparison
+    save_all_models_report(df_results)
+    
+    # Find models with highest accuracy and MCC
+    best_acc_config = df_results.sort_values('accuracy', ascending=False).iloc[0]
+    best_mcc_config = df_results.sort_values('mcc', ascending=False).iloc[0]
+    
     # Final report
     print("\n===== Final Report =====")
-    print("Best Configuration:")
+    print("Best Configuration by Accuracy:")
     for key, value in best_config.items():
         print(f"  {key}: {value}")
         
     best_result = [r for r in results if r['config'] == best_config][0]
     print(f"\nBest Validation Accuracy: {best_result['accuracy']:.4f}")
-    print(f"Best Error Rate: {best_result['error_rate']:.4f}")
-    print(f"Best Matthews Correlation Coefficient: {best_result['mcc']:.4f}")
+    print(f"Error Rate: {best_result['error_rate']:.4f}")
+    print(f"Matthews Correlation Coefficient: {best_result['mcc']:.4f}")
     
-    print("\nTop 5 Configurations by Accuracy:")
-    top_configs = df_results.sort_values('accuracy', ascending=False).head(5)
-    for i, (_, row) in enumerate(top_configs.iterrows(), 1):
-        print(f"{i}. {row['config_str']} - Accuracy: {row['accuracy']:.4f}")
+    print("\nBest Configuration by MCC:")
+    print(f"  Configuration: {best_mcc_config['config_str']}")
+    print(f"  MCC: {best_mcc_config['mcc']:.4f}")
+    print(f"  Accuracy: {best_mcc_config['accuracy']:.4f}")
+    
+    # Analysis of optimal parameters
+    print("\nParameter Analysis:")
+    
+    # Vectorizer type analysis
+    vectorizer_analysis = df_results.groupby('vectorizer_type')['accuracy'].mean().reset_index()
+    best_vectorizer = vectorizer_analysis.loc[vectorizer_analysis['accuracy'].idxmax()]['vectorizer_type']
+    print(f"Best vectorizer type: {best_vectorizer} (avg accuracy: {vectorizer_analysis['accuracy'].max():.4f})")
+    
+    # Stopwords analysis
+    stopwords_analysis = df_results.groupby('stopwords_option')['accuracy'].mean().reset_index()
+    best_stopwords = stopwords_analysis.loc[stopwords_analysis['accuracy'].idxmax()]['stopwords_option']
+    print(f"Best stopwords option: {best_stopwords} (avg accuracy: {stopwords_analysis['accuracy'].max():.4f})")
+    
+    # Custom stopwords count analysis (if relevant)
+    if 'custom' in df_results['stopwords_option'].values:
+        custom_df = df_results[df_results['stopwords_option'] == 'custom']
+        count_analysis = custom_df.groupby('stopwords_count')['accuracy'].mean().reset_index()
+        best_count = count_analysis.loc[count_analysis['accuracy'].idxmax()]['stopwords_count']
+        print(f"Best stopwords count: {int(best_count)} (avg accuracy: {count_analysis['accuracy'].max():.4f})")
+    
+    # C value analysis
+    c_analysis = df_results.groupby('c_value')['accuracy'].mean().reset_index()
+    best_c = c_analysis.loc[c_analysis['accuracy'].idxmax()]['c_value']
+    print(f"Best C value: {best_c} (avg accuracy: {c_analysis['accuracy'].max():.4f})")
     
     print("========================")
 
