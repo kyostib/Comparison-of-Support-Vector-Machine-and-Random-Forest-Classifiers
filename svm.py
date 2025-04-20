@@ -23,14 +23,18 @@ def tokenize(text):
     """Basic tokenizer that lowercases and extracts words"""
     return re.findall(r'\b[a-z]{2,}\b', text.lower())
 
+
+# Custom stop-word list from the most frequent words. 
+# This is done because sklearns 'english' stop-words list is quite bad.
 def build_custom_stopwords(corpus, top_n=50):
-    """Build a stopword list of the most frequent words in the training corpus"""
     word_counts = Counter()
     for doc in corpus:
         tokens = tokenize(doc)
         word_counts.update(tokens)
     return set([word for word, _ in word_counts.most_common(top_n)])
 
+
+# Loading data and splitting it into features and labels, and training and validation
 def load_data():
     """Load train and validation datasets"""
     print("Loading datasets...")
@@ -62,8 +66,8 @@ def create_text_pipeline(vectorizer_type="tfidf", stop_words=None):
     """
     # Common vectorizer parameters
     vectorizer_params = {
-        'min_df': 5,  # Minimum document frequency
-        'max_df': 0.5,  # Maximum document frequency (to remove very common words)
+        'min_df': 5,
+        'max_df': 0.5,
         'stop_words': stop_words
     }
     vectorizer_params_bow = {
@@ -144,6 +148,7 @@ def evaluate_configuration(X_train, y_train, X_val, y_val, config):
     
     return results
 
+# Here I got a quite alot of help from Claude 3.7
 def grid_search_configurations(X_train, y_train, X_val, y_val):
     """Search through different configurations to find the optimal one"""
     # Define configuration grid
@@ -209,8 +214,9 @@ def grid_search_configurations(X_train, y_train, X_val, y_val):
     
     return results, best_config, best_model, all_reports
 
+
+# extracting results to a file
 def visualize_results(results):
-    """Visualize the results of different configurations"""
     # Extract data for visualization
     df_results = pd.DataFrame([
         {
@@ -234,103 +240,23 @@ def visualize_results(results):
         axis=1
     )
     
-    # Plot accuracy by configuration
-    plt.figure(figsize=(15, 10))
-    
-    # Filter for custom stopwords
-    custom_df = df_results[df_results['stopwords_option'] == 'custom']
-    sns.lineplot(data=custom_df, x='stopwords_count', y='accuracy', 
-                 hue='vectorizer_type', style='c_value', markers=True, dashes=False)
-    plt.title('Accuracy by Number of Stopwords (Custom)')
-    plt.xlabel('Number of Stopwords')
-    plt.ylabel('Validation Accuracy')
-    plt.grid(True, alpha=0.3)
-    plt.savefig('accuracy_by_stopwords_count.png')
-    
-    # Plot accuracy by C value
-    plt.figure(figsize=(15, 10))
-    sns.barplot(data=df_results, x='c_value', y='accuracy', hue='vectorizer_type')
-    plt.title('Accuracy by C Value')
-    plt.xlabel('C Value')
-    plt.ylabel('Validation Accuracy')
-    plt.grid(True, alpha=0.3)
-    plt.savefig('accuracy_by_c_value.png')
-    
-    # Plot comparing all configurations
-    plt.figure(figsize=(20, 10))
-    
     # Sort by accuracy
     df_results = df_results.sort_values('accuracy')
     
-    # Plot
-    sns.barplot(data=df_results, x='config_str', y='accuracy')
-    plt.title('Accuracy by Configuration')
-    plt.xlabel('Configuration')
-    plt.ylabel('Validation Accuracy')
-    plt.xticks(rotation=90)
-    plt.tight_layout()
-    plt.grid(True, alpha=0.3)
-    plt.savefig('accuracy_by_configuration.png')
-    
-    # NEW: Plot top 10 models by accuracy
-    plt.figure(figsize=(16, 8))
-    top10_acc = df_results.sort_values('accuracy', ascending=False).head(10)
-    
-    # Create a horizontal bar chart
-    ax = sns.barplot(data=top10_acc, y='config_str', x='accuracy', palette='viridis')
-    plt.title('Top 10 Models by Accuracy', fontsize=16)
-    plt.xlabel('Accuracy', fontsize=12)
-    plt.ylabel('Configuration', fontsize=12)
-    
-    # Add accuracy values as text
-    for i, v in enumerate(top10_acc['accuracy']):
-        ax.text(v + 0.001, i, f' {v:.4f}', va='center')
-    
-    plt.tight_layout()
-    plt.grid(True, alpha=0.3, axis='x')
-    plt.savefig('top10_models_by_accuracy.png')
-    print("Top 10 models by accuracy visualization saved")
-    
-    # NEW: Plot top 10 models by MCC
-    plt.figure(figsize=(16, 8))
+    # top-10 models by accuracy and mcc
+    top10_acc = df_results.head(10)
     top10_mcc = df_results.sort_values('mcc', ascending=False).head(10)
-    
-    # Create a horizontal bar chart
-    ax = sns.barplot(data=top10_mcc, y='config_str', x='mcc', palette='plasma')
-    plt.title('Top 10 Models by Matthews Correlation Coefficient', fontsize=16)
-    plt.xlabel('MCC', fontsize=12)
-    plt.ylabel('Configuration', fontsize=12)
-    
-    # Add MCC values as text
-    for i, v in enumerate(top10_mcc['mcc']):
-        ax.text(v + 0.001, i, f' {v:.4f}', va='center')
-    
-    plt.tight_layout()
-    plt.grid(True, alpha=0.3, axis='x')
-    plt.savefig('top10_models_by_mcc.png')
-    print("Top 10 models by MCC visualization saved")
-    
-    # NEW: Generate a table with top 10 models by accuracy
-    print("\nTop 10 Models by Accuracy:")
-    top10_acc_table = top10_acc[['config_str', 'accuracy', 'mcc', 'train_time']]
-    print(top10_acc_table.to_string(index=False))
-    
-    # NEW: Generate a table with top 10 models by MCC
-    print("\nTop 10 Models by MCC:")
-    top10_mcc_table = top10_mcc[['config_str', 'mcc', 'accuracy', 'train_time']]
-    print(top10_mcc_table.to_string(index=False))
     
     # Export top models data to CSV
     top10_acc.to_csv('top10_models_by_accuracy.csv', index=False)
     top10_mcc.to_csv('top10_models_by_mcc.csv', index=False)
-    
-    print("Visualizations and data files saved.")
-    
+
     return df_results
 
+# All the top 10 models are extracted but only the best one is evaluated
+# (confusion matrix and feature importance)
 def evaluate_best_model(model, X_val, y_val):
-    """Detailed evaluation of the best model"""
-    print("\nEvaluating best model on validation set...")
+
     y_val_pred = model.predict(X_val)
     
     # Confusion Matrix with visualization
@@ -348,7 +274,7 @@ def evaluate_best_model(model, X_val, y_val):
     plt.title('Confusion Matrix for Best Model')
     plt.tight_layout()
     plt.savefig('best_model_confusion_matrix.png')
-    print("Confusion matrix visualization saved as 'best_model_confusion_matrix.png'")
+    print("Confusion matrix saved")
     
     # Feature importance analysis
     if hasattr(model['classifier'], 'coef_'):
@@ -359,24 +285,25 @@ def evaluate_best_model(model, X_val, y_val):
         top_positive_idx = np.argsort(coefficients)[-15:]
         top_negative_idx = np.argsort(coefficients)[:15]
         
-        print("\nTop positive features (positive sentiment):")
+        print("\nTop positive features:")
         for idx in top_positive_idx:
             print(f"{feature_names[idx]}: {coefficients[idx]:.4f}")
         
-        print("\nTop negative features (negative sentiment):")
+        print("\nTop negative features:")
         for idx in top_negative_idx:
             print(f"{feature_names[idx]}: {coefficients[idx]:.4f}")
             
     return conf_matrix
 
-def save_model(model, model_name='best_svm_model.pkl'):
-    """Save the trained model pipeline"""
-    print(f"\nSaving best model as '{model_name}'...")
-    joblib.dump(model, model_name)
-    print("Model saved successfully.")
+# No need for the model, we are only interested in the metrics
+#def save_model(model, model_name='best_svm_model.pkl'):
+#    print(f"\nSaving best model as '{model_name}'...")
+#    joblib.dump(model, model_name)
+#    print("Model saved successfully.")
 
+
+# Every runs' report saved as json file
 def save_reports(all_reports, filename='all_classification_reports.json'):
-    """Save all classification reports to a JSON file"""
     import json
     
     # Convert numpy values to Python types
@@ -397,8 +324,7 @@ def save_all_models_report(df_results, filename='all_models_comparison.csv'):
     print(f"Full models comparison saved to {filename}")
 
 def main():
-    """Main function to execute the entire workflow"""
-    print("Starting sentiment analysis model optimization...")
+    print("Starting...")
     
     # Load data
     X_train, y_train, X_val, y_val = load_data()
@@ -411,9 +337,6 @@ def main():
     
     # Evaluate best model in detail
     conf_matrix = evaluate_best_model(best_model, X_val, y_val)
-    
-    # Save best model
-    save_model(best_model, f"best_model_{best_config['vectorizer_type']}_{best_config.get('stopwords_option', 'none')}.pkl")
     
     # Save all classification reports
     save_reports(all_reports)
