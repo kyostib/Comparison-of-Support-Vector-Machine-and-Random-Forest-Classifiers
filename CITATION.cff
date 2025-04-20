@@ -1,0 +1,20 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: >-
+  Comparison of Support Vector Machine and Random Forest
+  Classifiers
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Kalle Kyöstiö
+    email: kallekyostio@gmail.com
+repository-code: >-
+  https://github.com/kyostib/Comparison-of-Support-Vector-Machine-and-Random-Forest-Classifiers
+abstract: >-
+  Scripts for comparing SVM and RF classifiers using
+  sentiment analysis. Sentiment data is from SST-2 dataset
+  (https://huggingface.co/datasets/stanfordnlp/sst2)
