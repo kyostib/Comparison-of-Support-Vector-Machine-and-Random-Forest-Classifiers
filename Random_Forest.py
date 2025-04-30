@@ -6,13 +6,14 @@ import seaborn as sns
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, matthews_corrcoef
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, matthews_corrcoef, make_scorer
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import GridSearchCV
 from collections import Counter
 import re
 from time import time
 import json
+import multiprocessing
 
 # Define dataset paths
 splits = {
@@ -90,8 +91,10 @@ def create_text_pipeline(vectorizer_type="tfidf", stop_words=None):
     
     return pipeline
 
+# This function is no longer needed as we're using GridSearchCV
+# Keeping it here as a reference but it won't be called in the main flow
 def evaluate_configuration(X_train, y_train, X_val, y_val, config):
-    """Evaluate a specific configuration"""
+    """Evaluate a specific configuration - DEPRECATED (using GridSearchCV instead)"""
     vectorizer_type = config['vectorizer_type']
     stopwords_option = config['stopwords_option']
     stopwords_count = config.get('stopwords_count', 0)
@@ -155,77 +158,228 @@ def evaluate_configuration(X_train, y_train, X_val, y_val, config):
     return results
 
 def grid_search_configurations(X_train, y_train, X_val, y_val):
-    """Search through different configurations to find the optimal one"""
-    # Define configuration grid for Random Forest with cost complexity pruning
-    vectorizer_types = ['bow', 'tfidf']
-    stopwords_options = [None, 'english', 'custom']
-    stopwords_counts = [10, 20, 30, 40, 50, 100, 200, 500]
-    n_estimators_values = [100, 200, 300]  # Number of trees
-    max_depth_values = [None, 10, 20, 30]  # Max depth of trees (None means unlimited)
-    ccp_alpha_values = [0.0, 0.001, 0.01, 0.05, 0.1]  # Cost complexity pruning parameter
+    """Search through different configurations using GridSearchCV and parallel processing"""
+    # Calculate number of cores for parallel processing
+    n_cores = multiprocessing.cpu_count()
+    print(f"Running grid search in parallel using {n_cores} cores")
     
     results = []
-    best_accuracy = 0
-    best_config = None
-    best_model = None
-    
-    # Store full reports for each configuration
     all_reports = {}
     
-    for vectorizer_type in vectorizer_types:
-        for stopwords_option in stopwords_options:
-            if stopwords_option == 'custom':
-                for stopwords_count in stopwords_counts:
-                    for n_estimators in n_estimators_values:
-                        for max_depth in max_depth_values:
-                            for ccp_alpha in ccp_alpha_values:
-                                config = {
-                                    'vectorizer_type': vectorizer_type,
-                                    'stopwords_option': stopwords_option,
-                                    'stopwords_count': stopwords_count,
-                                    'n_estimators': n_estimators,
-                                    'max_depth': max_depth,
-                                    'ccp_alpha': ccp_alpha
-                                }
-                                
-                                config_name = f"{vectorizer_type}_{stopwords_option}_{stopwords_count}_trees{n_estimators}_depth{max_depth}_ccp{ccp_alpha}"
-                                print(f"\n{'='*50}")
-                                print(f"Evaluating configuration: {config_name}")
-                                print(f"{'='*50}")
-                                
-                                result = evaluate_configuration(X_train, y_train, X_val, y_val, config)
-                                results.append(result)
-                                all_reports[config_name] = result['report']
-                                
-                                if result['accuracy'] > best_accuracy:
-                                    best_accuracy = result['accuracy']
-                                    best_config = config
-                                    best_model = result['pipeline']
+    # Create custom scorer for MCC (Matthews Correlation Coefficient)
+    mcc_scorer = make_scorer(matthews_corrcoef)
+    
+    # Process each vectorizer type separately
+    for vectorizer_type in ['bow', 'tfidf']:
+        for stopwords_option in [None, 'english', 'custom']:
+            # Prepare stopwords
+            stop_words = None
+            if stopwords_option == 'english':
+                stop_words = 'english'
+            elif stopwords_option == 'custom':
+                # Try different stopwords counts if using custom stopwords
+                for stopwords_count in [30, 50, 100, 200]:
+                    print(f"\n{'='*50}")
+                    print(f"Evaluating {vectorizer_type} with {stopwords_option} stopwords (count={stopwords_count})")
+                    print(f"{'='*50}")
+                    
+                    stop_words = list(build_custom_stopwords(X_train, top_n=stopwords_count))
+                    
+                    # Create pipeline
+                    pipeline = create_text_pipeline(vectorizer_type, stop_words)
+                    
+                    # Define parameter grid
+                    param_grid = {
+                        'classifier__n_estimators': [100, 200, 300],
+                        'classifier__max_depth': [None, 10, 20, 30],
+                        'classifier__ccp_alpha': [0.0, 0.001, 0.01, 0.05, 0.1],
+                        'classifier__random_state': [42],  # Fixed for reproducibility
+                    }
+                    
+                    # Create grid search with multiple scoring metrics
+                    grid_search = GridSearchCV(
+                        estimator=pipeline,
+                        param_grid=param_grid,
+                        scoring={
+                            'accuracy': 'accuracy',
+                            'mcc': mcc_scorer
+                        },
+                        refit='accuracy',  # Use accuracy to select the best model
+                        cv=5,  # 5-fold cross-validation
+                        n_jobs=n_cores,  # Parallel processing
+                        verbose=2
+                    )
+                    
+                    # Fit the grid search
+                    start_time = time()
+                    grid_search.fit(X_train, y_train)
+                    train_time = time() - start_time
+                    print(f"Grid search completed in {train_time:.2f} seconds")
+                    
+                    # Get best model and parameters
+                    best_model = grid_search.best_estimator_
+                    best_params = grid_search.best_params_
+                    
+                    # Create config dict that mirrors the original format
+                    config = {
+                        'vectorizer_type': vectorizer_type,
+                        'stopwords_option': stopwords_option,
+                        'stopwords_count': stopwords_count,
+                        'n_estimators': best_params['classifier__n_estimators'],
+                        'max_depth': best_params['classifier__max_depth'],
+                        'ccp_alpha': best_params['classifier__ccp_alpha']
+                    }
+                    
+                    # Evaluate on validation set
+                    start_time = time()
+                    y_val_pred = best_model.predict(X_val)
+                    pred_time = time() - start_time
+                    
+                    # Calculate metrics
+                    val_accuracy = accuracy_score(y_val, y_val_pred)
+                    error_rate = 1 - val_accuracy
+                    mcc = matthews_corrcoef(y_val, y_val_pred)
+                    
+                    # Generate classification report
+                    report = classification_report(y_val, y_val_pred, output_dict=True)
+                    
+                    # Create config name for reporting
+                    config_name = f"{vectorizer_type}_{stopwords_option}_{stopwords_count}_trees{config['n_estimators']}_depth{config['max_depth']}_ccp{config['ccp_alpha']}"
+                    
+                    # Store results
+                    result = {
+                        'config': config,
+                        'accuracy': val_accuracy,
+                        'error_rate': error_rate,
+                        'mcc': mcc,
+                        'train_time': train_time,
+                        'pred_time': pred_time,
+                        'report': report,
+                        'pipeline': best_model,
+                        'grid_search_results': grid_search.cv_results_ 
+                    }
+                    
+                    results.append(result)
+                    all_reports[config_name] = report
+                    
+                    print(f'Validation Accuracy: {val_accuracy:.4f}')
+                    print(f'Error Rate: {error_rate:.4f}')
+                    print(f'Matthews Correlation Coefficient (MCC): {mcc:.4f}')
+                    print("\nClassification Report:")
+                    print(classification_report(y_val, y_val_pred))
+                    
+                    # Show grid search results summary
+                    print("\nTop 5 configurations from grid search:")
+                    cv_results = pd.DataFrame(grid_search.cv_results_)
+                    cv_results = cv_results.sort_values("rank_test_accuracy").head(5)
+                    for i, row in cv_results.iterrows():
+                        print(f"Rank {int(row['rank_test_accuracy'])}: Mean accuracy={row['mean_test_accuracy']:.4f}, "
+                              f"Estimators={row['param_classifier__n_estimators']}, "
+                              f"Depth={row['param_classifier__max_depth']}, "
+                              f"CCP Alpha={row['param_classifier__ccp_alpha']}")
+                    
             else:
-                for n_estimators in n_estimators_values:
-                    for max_depth in max_depth_values:
-                        for ccp_alpha in ccp_alpha_values:
-                            config = {
-                                'vectorizer_type': vectorizer_type,
-                                'stopwords_option': stopwords_option,
-                                'n_estimators': n_estimators,
-                                'max_depth': max_depth,
-                                'ccp_alpha': ccp_alpha
-                            }
-                            
-                            config_name = f"{vectorizer_type}_{stopwords_option}_trees{n_estimators}_depth{max_depth}_ccp{ccp_alpha}"
-                            print(f"\n{'='*50}")
-                            print(f"Evaluating configuration: {config_name}")
-                            print(f"{'='*50}")
-                            
-                            result = evaluate_configuration(X_train, y_train, X_val, y_val, config)
-                            results.append(result)
-                            all_reports[config_name] = result['report']
-                            
-                            if result['accuracy'] > best_accuracy:
-                                best_accuracy = result['accuracy']
-                                best_config = config
-                                best_model = result['pipeline']
+                # For None or 'english' stopwords options
+                print(f"\n{'='*50}")
+                print(f"Evaluating {vectorizer_type} with {stopwords_option} stopwords")
+                print(f"{'='*50}")
+                
+                # Create pipeline
+                pipeline = create_text_pipeline(vectorizer_type, stop_words)
+                
+                # Define parameter grid
+                param_grid = {
+                    'classifier__n_estimators': [100, 200, 300],
+                    'classifier__max_depth': [None, 10, 20, 30],
+                    'classifier__ccp_alpha': [0.0, 0.001, 0.01, 0.05, 0.1],
+                    'classifier__random_state': [42],  # Fixed for reproducibility
+                }
+                
+                # Create grid search with multiple scoring metrics
+                grid_search = GridSearchCV(
+                    estimator=pipeline,
+                    param_grid=param_grid,
+                    scoring={
+                        'accuracy': 'accuracy',
+                        'mcc': mcc_scorer
+                    },
+                    refit='accuracy',  # Use accuracy to select the best model
+                    cv=5,  # 5-fold cross-validation
+                    n_jobs=n_cores,  # Parallel processing
+                    verbose=2
+                )
+                
+                # Fit the grid search
+                start_time = time()
+                grid_search.fit(X_train, y_train)
+                train_time = time() - start_time
+                print(f"Grid search completed in {train_time:.2f} seconds")
+                
+                # Get best model and parameters
+                best_model = grid_search.best_estimator_
+                best_params = grid_search.best_params_
+                
+                # Create config dict that mirrors the original format
+                config = {
+                    'vectorizer_type': vectorizer_type,
+                    'stopwords_option': stopwords_option,
+                    'n_estimators': best_params['classifier__n_estimators'],
+                    'max_depth': best_params['classifier__max_depth'],
+                    'ccp_alpha': best_params['classifier__ccp_alpha']
+                }
+                
+                # Evaluate on validation set
+                start_time = time()
+                y_val_pred = best_model.predict(X_val)
+                pred_time = time() - start_time
+                
+                # Calculate metrics
+                val_accuracy = accuracy_score(y_val, y_val_pred)
+                error_rate = 1 - val_accuracy
+                mcc = matthews_corrcoef(y_val, y_val_pred)
+                
+                # Generate classification report
+                report = classification_report(y_val, y_val_pred, output_dict=True)
+                
+                # Create config name for reporting
+                config_name = f"{vectorizer_type}_{stopwords_option}_trees{config['n_estimators']}_depth{config['max_depth']}_ccp{config['ccp_alpha']}"
+                
+                # Store results
+                result = {
+                    'config': config,
+                    'accuracy': val_accuracy,
+                    'error_rate': error_rate,
+                    'mcc': mcc,
+                    'train_time': train_time,
+                    'pred_time': pred_time,
+                    'report': report,
+                    'pipeline': best_model,
+                    'grid_search_results': grid_search.cv_results_
+                }
+                
+                results.append(result)
+                all_reports[config_name] = report
+                
+                print(f'Validation Accuracy: {val_accuracy:.4f}')
+                print(f'Error Rate: {error_rate:.4f}')
+                print(f'Matthews Correlation Coefficient (MCC): {mcc:.4f}')
+                print("\nClassification Report:")
+                print(classification_report(y_val, y_val_pred))
+                
+                # Show grid search results summary
+                print("\nTop 5 configurations from grid search:")
+                cv_results = pd.DataFrame(grid_search.cv_results_)
+                cv_results = cv_results.sort_values("rank_test_accuracy").head(5)
+                for i, row in cv_results.iterrows():
+                    print(f"Rank {int(row['rank_test_accuracy'])}: Mean accuracy={row['mean_test_accuracy']:.4f}, "
+                          f"Estimators={row['param_classifier__n_estimators']}, "
+                          f"Depth={row['param_classifier__max_depth']}, "
+                          f"CCP Alpha={row['param_classifier__ccp_alpha']}")
+    
+    # Find best model from all results
+    best_result = max(results, key=lambda x: x['accuracy'])
+    best_config = best_result['config']
+    best_model = best_result['pipeline']
     
     return results, best_config, best_model, all_reports
 
@@ -266,40 +420,82 @@ def visualize_results(results):
     top10_mcc = df_results.sort_values('mcc', ascending=False).head(10)
     
     # Export top models data to CSV
-    top10_acc.to_csv('top10_models_by_accuracy.csv', index=False)
-    top10_mcc.to_csv('top10_models_by_mcc.csv', index=False)
-
-    # Visualization for ccp_alpha effect
-    plt.figure(figsize=(12, 8))
-    sns.boxplot(x='ccp_alpha', y='accuracy', data=df_results)
-    plt.title('Effect of Cost Complexity Pruning on Accuracy')
-    plt.xlabel('ccp_alpha')
-    plt.ylabel('Accuracy')
-    plt.grid(True, alpha=0.3)
-    plt.savefig('ccp_alpha_effect.png')
-    plt.close()
+    top10_acc.to_csv('rf_top10_models_by_accuracy.csv', index=False)
+    top10_mcc.to_csv('rf_top10_models_by_mcc.csv', index=False)
     
-    # Visualization for max_depth effect
-    plt.figure(figsize=(12, 8))
-    # Convert None to string for plotting
-    df_results['max_depth_str'] = df_results['max_depth'].apply(lambda x: 'None' if x is None else str(x))
-    sns.boxplot(x='max_depth_str', y='accuracy', data=df_results)
-    plt.title('Effect of Max Depth on Accuracy')
-    plt.xlabel('max_depth')
-    plt.ylabel('Accuracy')
-    plt.grid(True, alpha=0.3)
-    plt.savefig('max_depth_effect.png')
-    plt.close()
-    
-    # Visualization of n_estimators effect
-    plt.figure(figsize=(12, 8))
-    sns.boxplot(x='n_estimators', y='accuracy', data=df_results)
-    plt.title('Effect of Number of Estimators (Trees) on Accuracy')
-    plt.xlabel('n_estimators')
-    plt.ylabel('Accuracy')
-    plt.grid(True, alpha=0.3)
-    plt.savefig('n_estimators_effect.png')
-    plt.close()
+    # Make sure there are enough data points for visualizations
+    if len(df_results) >= 5:
+        # Visualization for ccp_alpha effect
+        plt.figure(figsize=(12, 8))
+        sns.boxplot(x='ccp_alpha', y='accuracy', data=df_results)
+        plt.title('Effect of Cost Complexity Pruning on Accuracy')
+        plt.xlabel('ccp_alpha')
+        plt.ylabel('Accuracy')
+        plt.grid(True, alpha=0.3)
+        plt.savefig('rf_ccp_alpha_effect.png')
+        plt.close()
+        
+        # Visualization for max_depth effect
+        plt.figure(figsize=(12, 8))
+        # Convert None to string for plotting
+        df_results['max_depth_str'] = df_results['max_depth'].apply(lambda x: 'None' if x is None else str(x))
+        sns.boxplot(x='max_depth_str', y='accuracy', data=df_results)
+        plt.title('Effect of Max Depth on Accuracy')
+        plt.xlabel('max_depth')
+        plt.ylabel('Accuracy')
+        plt.grid(True, alpha=0.3)
+        plt.savefig('rf_max_depth_effect.png')
+        plt.close()
+        
+        # Visualization of n_estimators effect
+        plt.figure(figsize=(12, 8))
+        sns.boxplot(x='n_estimators', y='accuracy', data=df_results)
+        plt.title('Effect of Number of Estimators (Trees) on Accuracy')
+        plt.xlabel('n_estimators')
+        plt.ylabel('Accuracy')
+        plt.grid(True, alpha=0.3)
+        plt.savefig('rf_n_estimators_effect.png')
+        plt.close()
+        
+        # Create cross-parameter analysis visualizations
+        # This helps see interactions between parameters
+        plt.figure(figsize=(15, 10))
+        g = sns.FacetGrid(df_results, col="max_depth_str", row="vectorizer_type", hue="stopwords_option", 
+                          margin_titles=True, height=4, aspect=1.2)
+        g.map(sns.scatterplot, "ccp_alpha", "accuracy")
+        g.add_legend()
+        plt.tight_layout()
+        plt.savefig('rf_parameter_interactions.png')
+        plt.close()
+        
+        # Analyze grid search results for the best model
+        for result in results:
+            if 'grid_search_results' in result:
+                # Take first result with grid search results
+                cv_results = pd.DataFrame(result['grid_search_results'])
+                
+                # Plot cross-validation accuracy for different ccp_alpha values
+                plt.figure(figsize=(14, 8))
+                
+                # Group by ccp_alpha and get mean accuracy
+                cv_summary = cv_results.groupby('param_classifier__ccp_alpha')['mean_test_accuracy'].mean().reset_index()
+                
+                # Plot relationship between ccp_alpha and cv accuracy
+                plt.plot(cv_summary['param_classifier__ccp_alpha'], 
+                         cv_summary['mean_test_accuracy'], 
+                         'o-', linewidth=2, markersize=8)
+                
+                plt.title('Cross-Validation Performance vs Cost Complexity Pruning')
+                plt.xlabel('ccp_alpha')
+                plt.ylabel('Mean CV Accuracy')
+                plt.grid(True, alpha=0.3)
+                plt.savefig('rf_ccp_alpha_cv_analysis.png')
+                plt.close()
+                
+                # Only need to do this once
+                break
+    else:
+        print("Not enough results for detailed visualizations")
 
     return df_results
 
@@ -320,7 +516,7 @@ def evaluate_best_model(model, X_val, y_val):
     plt.ylabel('True labels')
     plt.title('Confusion Matrix for Best Random Forest Model')
     plt.tight_layout()
-    plt.savefig('rf_best_model_confusion_matrix.png')
+    plt.savefig('best_model_confusion_matrix.png')
     print("Confusion matrix saved")
     
     # Feature importance analysis for Random Forest
@@ -393,7 +589,7 @@ def save_reports(all_reports, filename='all_classification_reports.json'):
     
     print(f"All classification reports saved to {filename}")
 
-def save_all_models_report(df_results, filename='rf_all_models_comparison.csv'):
+def save_all_models_report(df_results, filename='all_models_comparison.csv'):
     """Save all model results to a CSV file for further analysis"""
     df_results.to_csv(filename, index=False)
     print(f"Full models comparison saved to {filename}")
