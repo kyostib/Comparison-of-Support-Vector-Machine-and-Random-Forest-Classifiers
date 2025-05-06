@@ -65,6 +65,31 @@ def create_pipeline(vectorizer_instance, classifier_instance):
         ('classifier', classifier_instance)
     ])
 
+def format_grid_params_for_display(param_dict_from_gs):
+    """
+    Formats a parameter dictionary from GridSearchCV's cv_results_['params']
+    into a more readable string representation.
+    Handles specific formatting for stop_words and estimator class names.
+    """
+    formatted_params = {}
+    for k, v in param_dict_from_gs.items():
+        # For top-level 'vectorizer' or 'classifier' keys, which hold the estimator objects
+        if k in ['vectorizer', 'classifier'] and hasattr(v, '__class__') and \
+           not isinstance(v, (int, float, str, bool, list, dict, tuple, set)): # Check it's an actual estimator object
+            formatted_params[k] = type(v).__name__
+        # Specific handling for 'vectorizer__stop_words' sub-parameter
+        elif k == 'vectorizer__stop_words':
+            if isinstance(v, list) or isinstance(v, set):
+                formatted_params[k] = f'custom_{len(v) if v else 0}' # Handles empty list/set
+            elif v is None:
+                formatted_params[k] = 'None'
+            else: # 'english' or other string
+                formatted_params[k] = str(v)
+        else: # For all other parameters (e.g., classifier__n_estimators, vectorizer__min_df)
+            formatted_params[k] = v
+    # Create a consistent string representation by sorting main keys
+    return str(dict(sorted(formatted_params.items())))
+
 def perform_grid_search(X_train, y_train, all_custom_stopwords_options=None):
     """
     Performs GridSearchCV to find the best hyperparameters for RandomForest.
@@ -119,7 +144,7 @@ def perform_grid_search(X_train, y_train, all_custom_stopwords_options=None):
     
     mcc_scorer = make_scorer(matthews_corrcoef)
 
-    grid_search = GridSearchCV(pipeline, param_grid, cv=3, # cv=3 for faster run, recommend 5 for real use
+    grid_search = GridSearchCV(pipeline, param_grid, cv=5, # cv=3 for faster run, recommend 5 for real use
                                scoring={'accuracy': 'accuracy', 'mcc': mcc_scorer}, 
                                refit='accuracy',
                                n_jobs=-1, verbose=2, return_train_score=True) 
@@ -148,65 +173,254 @@ def perform_grid_search(X_train, y_train, all_custom_stopwords_options=None):
     return grid_search.best_estimator_, grid_search.best_params_, grid_search.cv_results_
 
 
-def visualize_cv_results(cv_results, top_n=20):
-    """Visualize cross-validation results"""
-    print("\nProcessing CV results for visualization...")
-    results_df = pd.DataFrame(cv_results)
+def visualize_cv_results(cv_results_dict, top_n_display=20, top_n_save_summary=10, sort_metric='mean_test_accuracy'):
+    """
+    Processes and visualizes cross-validation results from GridSearchCV.
+    Saves the full CV results and a summary of the top N configurations to CSV files.
+    Plots the performance of the top N configurations.
+
+    Args:
+        cv_results_dict (dict): The cv_results_ attribute from a fitted GridSearchCV object.
+        top_n_display (int): Number of top configurations to print to console and include in the plot.
+        top_n_save_summary (int): Number of top configurations to save in a separate summary CSV file.
+        sort_metric (str): The metric in cv_results_dict to use for sorting (e.g., 'mean_test_accuracy').
     
-    # Function to make param values more readable, especially for stopword lists
-    def format_params(param_dict):
-        formatted_params = {}
-        for k, v in param_dict.items():
-            if k == 'vectorizer__stop_words':
-                if isinstance(v, list):
-                    formatted_params[k] = f'custom_{len(v)}'
-                else: # None or 'english'
-                    formatted_params[k] = str(v)
-            elif isinstance(v, (TfidfVectorizer, CountVectorizer, RandomForestClassifier)):
-                 formatted_params[k] = type(v).__name__ # Just class name
-            else:
-                formatted_params[k] = v
-        return str(formatted_params)
+    Returns:
+        pandas.DataFrame: The full, sorted DataFrame of CV results, or an empty DataFrame on error.
+    """
+    print("\n--- Processing GridSearchCV Cross-Validation Results ---")
+    if not isinstance(cv_results_dict, dict) or not cv_results_dict:
+        print("Error: cv_results_dict is empty or not a dictionary. Cannot process.")
+        return pd.DataFrame()
 
-    results_df['params_str'] = results_df['params'].apply(format_params)
+    try:
+        results_df = pd.DataFrame(cv_results_dict)
+    except Exception as e:
+        print(f"Error converting cv_results_dict to DataFrame: {e}")
+        return pd.DataFrame()
 
-    # Corrected column selection
-    key_columns = ['params_str', 'mean_test_accuracy', 'std_test_accuracy', 
-                   'mean_train_accuracy', 'std_train_accuracy', 
-                   'mean_test_mcc', 'std_test_mcc',
-                   'mean_fit_time', 'mean_score_time']
-    # Filter out columns that might not exist if return_train_score=False for some reason
-    existing_columns = [col for col in key_columns if col in results_df.columns]
-    results_df_filtered = results_df[existing_columns]
+    if results_df.empty:
+        print("CV results DataFrame is empty after conversion.")
+        return results_df
+
+    if 'params' not in results_df.columns:
+        print("Error: 'params' column missing in cv_results_dict. Cannot format parameters.")
+        return results_df # Or handle more gracefully depending on needs
+
+    # Format parameters for readability
+    results_df['params_str'] = results_df['params'].apply(format_grid_params_for_display)
+
+    # Define key columns that are expected from GridSearchCV with multi-metric scoring
+    # (and train scores if return_train_score=True)
+    expected_base_metrics = ['accuracy', 'mcc'] # Metrics used in scoring
+    score_types = ['mean_test', 'std_test', 'mean_train', 'std_train', 'rank_test']
     
-    results_df_sorted = results_df_filtered.sort_values(by='mean_test_accuracy', ascending=False)
+    key_columns_for_report = ['params_str', 'params', 'mean_fit_time', 'mean_score_time']
+    for metric_name in expected_base_metrics:
+        for score_type in score_types:
+            key_columns_for_report.append(f'{score_type}_{metric_name}')
+            
+    # Filter to keep only existing columns in the DataFrame
+    existing_columns_for_report = [col for col in key_columns_for_report if col in results_df.columns]
+    if not existing_columns_for_report:
+        print("Error: No relevant data columns found in CV results DataFrame.")
+        return results_df
+        
+    results_df_filtered = results_df[existing_columns_for_report]
 
-    print(f"\nTop {top_n} configurations based on Mean CV Accuracy:")
-    print(results_df_sorted.head(top_n))
+    # Sort by the specified metric
+    if sort_metric not in results_df_filtered.columns:
+        print(f"Warning: Specified sort_metric '{sort_metric}' not found in CV results. Results will not be sorted reliably.")
+        results_df_sorted = results_df_filtered # Proceed with unsorted or default sorted data
+    else:
+        results_df_sorted = results_df_filtered.sort_values(by=sort_metric, ascending=False)
 
-    results_df_sorted.to_csv('gridsearchcv_rf_results.csv', index=False)
-    print(f"\nFull GridSearchCV results saved to 'gridsearchcv_rf_results.csv'")
+    # --- 1. Print top N configurations to console ---
+    print(f"\nTop {top_n_display} configurations (based on {sort_metric}):")
+    display_cols_console = ['params_str', sort_metric]
+    # Add MCC to console output if available and different from sort_metric
+    if 'mean_test_mcc' in results_df_sorted.columns and sort_metric != 'mean_test_mcc':
+        display_cols_console.append('mean_test_mcc')
+    if 'mean_fit_time' in results_df_sorted.columns:
+        display_cols_console.append('mean_fit_time')
+    
+    existing_display_cols_console = [col for col in display_cols_console if col in results_df_sorted.columns]
+    print(results_df_sorted[existing_display_cols_console].head(top_n_display))
 
-    plt.figure(figsize=(15, 8)) # Increased height for readability
-    top_results = results_df_sorted.head(top_n)
-    # Use params_str for ticks to give more info
-    tick_labels = [p[:100] + '...' if len(p) > 100 else p for p in top_results['params_str']] 
+    # --- 2. Save the FULL GridSearchCV results ---
+    full_results_filename = 'gridsearchcv_all_configurations_results.csv'
+    try:
+        results_df_sorted.to_csv(full_results_filename, index=False)
+        print(f"\nFull GridSearchCV results saved to '{full_results_filename}'")
+    except Exception as e:
+        print(f"Error saving full CV results to CSV: {e}")
 
-    plt.errorbar(range(top_n), top_results['mean_test_accuracy'], 
-                 yerr=top_results['std_test_accuracy'] if 'std_test_accuracy' in top_results else None, 
-                 fmt='o-', label='Mean Test Accuracy')
-    plt.xticks(range(top_n), tick_labels, rotation=90, ha='right')
-    plt.xlabel('Top Configurations (Sorted by Accuracy)')
-    plt.ylabel('Accuracy')
-    plt.title(f'Top {top_n} RandomForest Configurations from GridSearchCV (CV Accuracy)')
-    plt.legend()
-    plt.tight_layout() # Adjust layout to make room for labels
-    plt.savefig('gridsearchcv_rf_top_configs_accuracy.png')
-    print(f"Plot of top {top_n} config accuracies saved to 'gridsearchcv_rf_top_configs_accuracy.png'")
-    plt.close()
+    # --- 3. Save a summary of the top N configurations (CV performance) ---
+    if top_n_save_summary > 0:
+        print(f"\nSaving summary of top {top_n_save_summary} configurations (CV performance) to CSV...")
+        top_summary_df = results_df_sorted.head(top_n_save_summary)
+        
+        columns_for_top_summary = ['params_str', 'mean_test_accuracy', 'mean_test_mcc', 'mean_fit_time']
+        # Ensure these columns exist, especially if sorting by a different metric
+        existing_columns_for_top_summary = [col for col in columns_for_top_summary if col in top_summary_df.columns]
+        
+        if not existing_columns_for_top_summary or 'params_str' not in existing_columns_for_top_summary:
+             print("Warning: Essential columns for top CV configurations summary CSV are missing. Skipping save.")
+        else:
+            top_summary_to_save = top_summary_df[existing_columns_for_top_summary]
+            top_summary_filename = f'top_{top_n_save_summary}_cv_configurations_summary.csv'
+            try:
+                top_summary_to_save.to_csv(top_summary_filename, index=False)
+                print(f"Top {top_n_save_summary} CV configurations summary saved to '{top_summary_filename}'")
+            except Exception as e:
+                print(f"Error saving top CV configurations summary to CSV: {e}")
+    
+    # --- 4. Plotting performance of top N configurations ---
+    if top_n_display > 0 and sort_metric in results_df_sorted.columns:
+        print(f"\nGenerating plot for top {top_n_display} configurations...")
+        plt.figure(figsize=(15, max(10, top_n_display * 0.6))) # Adjusted height
+        top_results_for_plot = results_df_sorted.head(top_n_display)
+        
+        # Use params_str for ticks, truncate if too long for display
+        tick_labels = [
+            (p[:100] + '...' if len(p) > 100 else p) 
+            for p in top_results_for_plot['params_str']
+        ]
 
+        y_values = top_results_for_plot[sort_metric]
+        y_err_values = None
+        std_dev_col = sort_metric.replace('mean_', 'std_') # e.g., 'std_test_accuracy'
+        if std_dev_col in top_results_for_plot:
+            y_err_values = top_results_for_plot[std_dev_col]
+
+        plt.errorbar(range(len(top_results_for_plot)), y_values,
+                     yerr=y_err_values,
+                     fmt='o-', label=f'{sort_metric} (CV)', capsize=5, elinewidth=1, markeredgewidth=1)
+        
+        # Optionally plot MCC on the same graph if it's different and available
+        mcc_metric_plot = 'mean_test_mcc'
+        if mcc_metric_plot in top_results_for_plot.columns and mcc_metric_plot != sort_metric:
+            y_values_mcc = top_results_for_plot[mcc_metric_plot]
+            y_err_mcc = None
+            std_dev_mcc_col = mcc_metric_plot.replace('mean_', 'std_')
+            if std_dev_mcc_col in top_results_for_plot:
+                 y_err_mcc = top_results_for_plot[std_dev_mcc_col]
+            plt.errorbar(range(len(top_results_for_plot)), y_values_mcc,
+                         yerr=y_err_mcc,
+                         fmt='s--', label=f'{mcc_metric_plot} (CV)', capsize=5, elinewidth=1, markeredgewidth=1, alpha=0.7)
+
+        plt.xticks(range(len(top_results_for_plot)), tick_labels, rotation=90, ha='right', fontsize=8)
+        plt.xlabel(f'Top {top_n_display} Configurations (Sorted by {sort_metric})')
+        plt.ylabel('Score')
+        plt.title(f'Top {top_n_display} Configurations from GridSearchCV (CV Performance)')
+        plt.legend()
+        plt.grid(True, linestyle='--', alpha=0.6)
+        plt.tight_layout()
+        
+        plot_filename = f'gridsearchcv_top_{top_n_display}_configs_performance.png'
+        try:
+            plt.savefig(plot_filename)
+            print(f"Plot of top {top_n_display} configurations saved to '{plot_filename}'")
+        except Exception as e:
+            print(f"Error saving plot: {e}")
+        plt.close()
+    else:
+        print("Plotting skipped: No data to plot or sort_metric column missing.")
+        
+    print("--- Finished processing CV results ---")
     return results_df_sorted
 
+def evaluate_top_n_on_validation(X_train, y_train, X_val, y_val, cv_results_dict, 
+                                 top_n=10, refit_metric_name='accuracy', 
+                                 filename='top_n_configs_validation_performance.csv'):
+    """
+    Retrains the top N configurations from GridSearchCV on the full training set
+    and evaluates them on the validation set.
+
+    Args:
+        X_train, y_train: Full training data.
+        X_val, y_val: Validation data.
+        cv_results_dict: The cv_results_ attribute from GridSearchCV.
+        top_n: Number of top configurations to validate.
+        refit_metric_name: The metric name used for 'refit' in GridSearchCV (e.g., 'accuracy').
+                           This determines how "top" configurations are ranked.
+        filename: Name of the CSV file to save validation results.
+    Returns:
+        pandas.DataFrame: DataFrame containing validation performance of top N models.
+    """
+    print(f"\n--- Validating Top {top_n} Configurations on Validation Set ---")
+    validation_results_list = []
+    
+    df_cv = pd.DataFrame(cv_results_dict)
+
+    # Determine sorting column based on refit_metric_name
+    # GridSearchCV ranks are 'rank_test_METRIC_NAME' (lower is better)
+    rank_col = f'rank_test_{refit_metric_name}'
+    mean_score_col = f'mean_test_{refit_metric_name}'
+
+    if rank_col in df_cv.columns:
+        df_cv_sorted = df_cv.sort_values(by=rank_col, ascending=True)
+    elif mean_score_col in df_cv.columns:
+        print(f"Warning: Rank column '{rank_col}' not found. Sorting by '{mean_score_col}' descending.")
+        df_cv_sorted = df_cv.sort_values(by=mean_score_col, ascending=False)
+    else:
+        print(f"Error: Neither rank ('{rank_col}') nor score ('{mean_score_col}') column for metric '{refit_metric_name}' found. Cannot select top configurations.")
+        return pd.DataFrame()
+
+    top_n_selected_configs = df_cv_sorted.head(top_n)
+
+    for idx, row in top_n_selected_configs.iterrows():
+        params_for_this_config = row['params'] # Original params dict
+        cv_rank = row.get(rank_col, idx + 1) # Use rank if available, else fallback to index
+        
+        print(f"\nProcessing Configuration (CV Rank: {cv_rank})")
+        # print(f"  Parameters: {format_grid_params_for_display(params_for_this_config)}") # Can be verbose
+
+        # Reconstruct the pipeline using the estimator objects from this specific param set
+        # These objects (params_for_this_config['vectorizer'], params_for_this_config['classifier'])
+        # are already configured with their specific sub-parameters (e.g., min_df, n_estimators)
+        # as per this particular grid point from GridSearchCV.
+        pipeline_to_validate = Pipeline([
+            ('vectorizer', params_for_this_config['vectorizer']),
+            ('classifier', params_for_this_config['classifier'])
+        ])
+
+        # Train this specific pipeline configuration on the FULL training set
+        print(f"  Training on full training set...")
+        train_start_time = time()
+        pipeline_to_validate.fit(X_train, y_train)
+        train_time_val = time() - train_start_time
+
+        # Predict on the validation set
+        print(f"  Predicting on validation set...")
+        pred_start_time = time()
+        y_val_pred = pipeline_to_validate.predict(X_val)
+        pred_time_val = time() - pred_start_time
+
+        # Calculate validation metrics
+        val_accuracy = accuracy_score(y_val, y_val_pred)
+        val_mcc = matthews_corrcoef(y_val, y_val_pred)
+
+        print(f"    CV Mean Accuracy: {row.get(f'mean_test_accuracy', float('nan')):.4f}, CV Mean MCC: {row.get(f'mean_test_mcc', float('nan')):.4f}")
+        print(f"    Validation Accuracy: {val_accuracy:.4f}, Validation MCC: {val_mcc:.4f}")
+        print(f"    Training Time: {train_time_val:.2f}s, Prediction Time: {pred_time_val:.2f}s")
+
+        validation_results_list.append({
+            'cv_rank': cv_rank,
+            'params_str': format_grid_params_for_display(params_for_this_config),
+            'cv_mean_accuracy': row.get(f'mean_test_accuracy', float('nan')),
+            'cv_mean_mcc': row.get(f'mean_test_mcc', float('nan')),
+            'validation_accuracy': val_accuracy,
+            'validation_mcc': val_mcc,
+            'training_time_full_train_sec': train_time_val,
+            'prediction_time_val_sec': pred_time_val,
+        })
+
+    df_validation_summary = pd.DataFrame(validation_results_list)
+    df_validation_summary.to_csv(filename, index=False)
+    print(f"\nValidation performance of top {len(df_validation_summary)} configurations saved to '{filename}'")
+    
+    return df_validation_summary
 
 def evaluate_final_model(best_model_pipeline, X_val, y_val):
     """Evaluate the best model pipeline on the validation set."""
@@ -311,6 +525,11 @@ def main():
     )
 
     df_cv_results = visualize_cv_results(cv_results)
+    df_top_n_validation_perf = evaluate_top_n_on_validation(
+        X_train, y_train, X_val, y_val, cv_results, 
+        top_n=10,  # Or another number like 5 or 20
+        refit_metric_name='accuracy' 
+    )
     final_metrics = evaluate_final_model(best_model, X_val, y_val)
     save_model(best_model, model_name='best_random_forest_pipeline.pkl')
     save_final_report(final_metrics, filename='final_random_forest_validation_report.json')
@@ -333,6 +552,13 @@ def main():
             print(f"  {param_name}: {type(param_value).__name__}(...)")
         else:
             print(f"  {param_name}: {param_value}")
+
+    if not df_top_n_validation_perf.empty:
+        print("\nTop Configurations Performance on Validation Set (sorted by CV rank):")
+        # Select a few key columns to display
+        cols_to_show = ['cv_rank', 'params_str', 'cv_mean_accuracy', 'validation_accuracy', 'validation_mcc']
+        existing_cols_to_show = [col for col in cols_to_show if col in df_top_n_validation_perf.columns]
+        print(df_top_n_validation_perf[existing_cols_to_show])
              
     if not df_cv_results.empty:          
         print(f"\nBest Cross-Validation Accuracy (mean across folds): {df_cv_results['mean_test_accuracy'].iloc[0]:.4f}")
