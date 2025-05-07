@@ -155,9 +155,9 @@ def grid_search_configurations(X_train, y_train, X_val, y_val):
     # Define configuration grid
     vectorizer_types = ['bow', 'tfidf']
     stopwords_options = [None, 'english', 'custom']
-    stopwords_counts = [50, 100, 200]
-    n_estimators_values = [50, 100, 200]
-    max_depth_values = [0, 10, 20, 30]  # 0 means None (unlimited)
+    stopwords_counts = [20, 30, 50]
+    n_estimators_values = [150]
+    max_depth_values = [0]  # 0 means None (unlimited)
     
     results = []
     best_accuracy = 0
