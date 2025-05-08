@@ -13,14 +13,13 @@ import re
 from time import time
 import json
 
-# Define dataset paths
+# Dataset
 splits = {
     'train': 'data/train-00000-of-00001.parquet',
     'validation': 'data/validation-00000-of-00001.parquet'
 }
 
 def tokenize(text):
-    """Basic tokenizer that lowercases and extracts words"""
     return re.findall(r'\b[a-z]{2,}\b', text.lower())
 
 
@@ -36,35 +35,27 @@ def build_custom_stopwords(corpus, top_n=50):
 
 # Loading data and splitting it into features and labels, and training and validation
 def load_data():
-    """Load train and validation datasets"""
     print("Loading datasets...")
-    # Load the datasets
+
     base_path = "hf://datasets/stanfordnlp/sst2/"
     df_train = pd.read_parquet(base_path + splits["train"])
     df_val = pd.read_parquet(base_path + splits["validation"])
     
-    # Extract features and labels
     X_train, y_train = df_train['sentence'], df_train['label']
     X_val, y_val = df_val['sentence'], df_val['label']
     
     print(f"Train set size: {len(X_train)} samples")
     print(f"Validation set size: {len(X_val)} samples")
     
-    # Display class distribution
     print("\nClass distribution:")
     print("Training set:", pd.Series(y_train).value_counts().to_dict())
     print("Validation set:", pd.Series(y_val).value_counts().to_dict())
     
     return X_train, y_train, X_val, y_val
 
+# text processing and classification pipeline
 def create_text_pipeline(vectorizer_type="tfidf", stop_words=None):
-    """Create a text processing and classification pipeline
-    
-    Args:
-        vectorizer_type (str): Type of vectorizer to use - "tfidf" or "bow"
-        stop_words: None, 'english', or custom list of stopwords
-    """
-    # Common vectorizer parameters
+
     vectorizer_params = {
         'min_df': 5,
         'max_df': 0.5,
@@ -74,14 +65,12 @@ def create_text_pipeline(vectorizer_type="tfidf", stop_words=None):
         'stop_words': stop_words
     }
     
-    # Select vectorizer based on type
     if vectorizer_type.lower() == "tfidf":
         vectorizer = TfidfVectorizer(**vectorizer_params)
-    else:  # Default to Bag of Words
+    else: 
         vectorizer = CountVectorizer(**vectorizer_params_bow)
     
-    # Create a pipeline with preprocessing and model
-    # Using RandomForestClassifier instead of LinearSVC
+
     pipeline = Pipeline([
         ('vectorizer', vectorizer),
         ('classifier', RandomForestClassifier(class_weight='balanced'))
@@ -89,46 +78,39 @@ def create_text_pipeline(vectorizer_type="tfidf", stop_words=None):
     
     return pipeline
 
+# Evaluate a specific configuration
 def evaluate_configuration(X_train, y_train, X_val, y_val, config):
-    """Evaluate a specific configuration"""
     vectorizer_type = config['vectorizer_type']
     stopwords_option = config['stopwords_option']
     stopwords_count = config.get('stopwords_count', 0)
     n_estimators = config['n_estimators']
     max_depth = config['max_depth']
     
-    # Prepare stopwords
     stop_words = None
     if stopwords_option == 'english':
         stop_words = 'english'
     elif stopwords_option == 'custom':
         stop_words = list(build_custom_stopwords(X_train, top_n=stopwords_count))
     
-    # Create pipeline
     pipeline = create_text_pipeline(vectorizer_type, stop_words)
     
-    # Set RF parameters
     pipeline.named_steps['classifier'].n_estimators = n_estimators
     pipeline.named_steps['classifier'].max_depth = max_depth if max_depth > 0 else None
     
-    # Train the model
     print(f"\nTraining model with configuration: {config}")
     start_time = time()
     pipeline.fit(X_train, y_train)
     train_time = time() - start_time
     print(f"Training completed in {train_time:.2f} seconds")
     
-    # Evaluate on validation set
     start_time = time()
     y_val_pred = pipeline.predict(X_val)
     pred_time = time() - start_time
     
-    # Calculate metrics
     val_accuracy = accuracy_score(y_val, y_val_pred)
     error_rate = 1 - val_accuracy
     mcc = matthews_corrcoef(y_val, y_val_pred)
     
-    # Generate classification report
     report = classification_report(y_val, y_val_pred, output_dict=True)
     
     results = {
@@ -150,23 +132,24 @@ def evaluate_configuration(X_train, y_train, X_val, y_val, config):
     
     return results
 
+# Search through different configurations to find the optimal one
+# Can't use GridsearchCV as I want the top n models stats and GridsearchCV only gives the CV scores. 
 def grid_search_configurations(X_train, y_train, X_val, y_val):
-    """Search through different configurations to find the optimal one"""
-    # Define configuration grid
+
     vectorizer_types = ['bow', 'tfidf']
     stopwords_options = [None, 'english', 'custom']
     stopwords_counts = [20, 30, 50]
     n_estimators_values = [150]
-    max_depth_values = [0]  # 0 means None (unlimited)
+    max_depth_values = [0]  
     
     results = []
     best_accuracy = 0
     best_config = None
     best_model = None
     
-    # Store full reports for each configuration
     all_reports = {}
     
+    # Not the sexiest but it works
     for vectorizer_type in vectorizer_types:
         for stopwords_option in stopwords_options:
             if stopwords_option == 'custom':
@@ -220,9 +203,8 @@ def grid_search_configurations(X_train, y_train, X_val, y_val):
     
     return results, best_config, best_model, all_reports
 
-
+# Visualization
 def visualize_results(results):
-    # Extract data for visualization
     df_results = pd.DataFrame([
         {
             'vectorizer_type': r['config']['vectorizer_type'],
@@ -237,7 +219,6 @@ def visualize_results(results):
         for r in results
     ])
     
-    # Create a configuration string for each row
     df_results['config_str'] = df_results.apply(
         lambda row: f"{row['vectorizer_type']}_" + 
                    f"{row['stopwords_option']}_" + 
@@ -249,15 +230,13 @@ def visualize_results(results):
     # Sort by accuracy
     df_results_sorted = df_results.sort_values('accuracy', ascending=False)
     
-    # top-10 models by accuracy and mcc
     top10_acc = df_results_sorted.head(10)
     top10_mcc = df_results.sort_values('mcc', ascending=False).head(10)
     
-    # Export top models data to CSV
     top10_acc.to_csv('top10_rf_models_by_accuracy.csv', index=False)
     top10_mcc.to_csv('top10_rf_models_by_mcc.csv', index=False)
     
-    # Plot model performances
+    # Plot
     plt.figure(figsize=(12, 8))
     sns.barplot(data=top10_acc, x='config_str', y='accuracy')
     plt.title('Top 10 RF Models by Accuracy')
@@ -269,10 +248,10 @@ def visualize_results(results):
     
     return df_results
 
+# Evaluating the best model, Confusion matrix
 def evaluate_best_model(model, X_val, y_val):
     y_val_pred = model.predict(X_val)
     
-    # Confusion Matrix with visualization
     conf_matrix = confusion_matrix(y_val, y_val_pred)
     print("Confusion Matrix:")
     print(conf_matrix)
@@ -288,31 +267,11 @@ def evaluate_best_model(model, X_val, y_val):
     plt.tight_layout()
     plt.savefig('best_rf_model_confusion_matrix.png')
     print("Confusion matrix saved")
-    
-    # Feature importance analysis for Random Forest
-    if hasattr(model['classifier'], 'feature_importances_'):
-        feature_names = model['vectorizer'].get_feature_names_out()
-        importances = model['classifier'].feature_importances_
-        
-        # Get the top 20 most important features
-        indices = np.argsort(importances)[-20:]
-        
-        plt.figure(figsize=(10, 8))
-        plt.title('Feature Importances')
-        plt.barh(range(len(indices)), importances[indices], align='center')
-        plt.yticks(range(len(indices)), [feature_names[i] for i in indices])
-        plt.xlabel('Relative Importance')
-        plt.tight_layout()
-        plt.savefig('rf_feature_importances.png')
-        
-        print("\nTop 20 important features:")
-        for i in reversed(indices):
-            print(f"{feature_names[i]}: {importances[i]:.4f}")
             
     return conf_matrix
 
+# Saving reports
 def save_reports(all_reports, filename='all_rf_classification_reports.json'):
-    # Convert numpy values to Python types
     for config_name, report in all_reports.items():
         for class_name, metrics in report.items():
             if isinstance(metrics, dict):
@@ -324,18 +283,18 @@ def save_reports(all_reports, filename='all_rf_classification_reports.json'):
     
     print(f"All classification reports saved to {filename}")
 
+# Saving model stats
 def save_all_models_report(df_results, filename='all_rf_models_comparison.csv'):
     """Save all model results to a CSV file for further analysis"""
     df_results.sort_values('accuracy', ascending=False).to_csv(filename, index=False)
     print(f"Full models comparison saved to {filename}")
 
+# Main function that runs everything mentioned before
 def main():
-    print("Starting Random Forest classifier evaluation...")
     
-    # Load data
     X_train, y_train, X_val, y_val = load_data()
     
-    # Grid search across configurations
+    # Search across configurations
     results, best_config, best_model, all_reports = grid_search_configurations(X_train, y_train, X_val, y_val)
     
     # Visualize results
@@ -383,23 +342,10 @@ def main():
     best_stopwords = stopwords_analysis.loc[stopwords_analysis['accuracy'].idxmax()]['stopwords_option']
     print(f"Best stopwords option: {best_stopwords} (avg accuracy: {stopwords_analysis['accuracy'].max():.4f})")
     
-    # Custom stopwords count analysis (if relevant)
-    if 'custom' in df_results['stopwords_option'].values:
-        custom_df = df_results[df_results['stopwords_option'] == 'custom']
-        count_analysis = custom_df.groupby('stopwords_count')['accuracy'].mean().reset_index()
-        best_count = count_analysis.loc[count_analysis['accuracy'].idxmax()]['stopwords_count']
-        print(f"Best stopwords count: {int(best_count)} (avg accuracy: {count_analysis['accuracy'].max():.4f})")
-    
     # N estimators analysis
     n_estimators_analysis = df_results.groupby('n_estimators')['accuracy'].mean().reset_index()
     best_n_estimators = n_estimators_analysis.loc[n_estimators_analysis['accuracy'].idxmax()]['n_estimators']
     print(f"Best n_estimators value: {int(best_n_estimators)} (avg accuracy: {n_estimators_analysis['accuracy'].max():.4f})")
-    
-    # Max depth analysis
-    max_depth_analysis = df_results.groupby('max_depth')['accuracy'].mean().reset_index()
-    best_max_depth = max_depth_analysis.loc[max_depth_analysis['accuracy'].idxmax()]['max_depth']
-    best_max_depth_str = "None (unlimited)" if best_max_depth == 0 else str(int(best_max_depth))
-    print(f"Best max_depth value: {best_max_depth_str} (avg accuracy: {max_depth_analysis['accuracy'].max():.4f})")
     
     print("========================")
 

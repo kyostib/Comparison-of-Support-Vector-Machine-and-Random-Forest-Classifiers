@@ -8,19 +8,17 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, matthews_corrcoef
 from sklearn.pipeline import Pipeline
-from sklearn.model_selection import GridSearchCV
 from collections import Counter
 import re
 from time import time
 
-# Define dataset paths
+# Dataset paths
 splits = {
     'train': 'data/train-00000-of-00001.parquet',
     'validation': 'data/validation-00000-of-00001.parquet'
 }
 
 def tokenize(text):
-    """Basic tokenizer that lowercases and extracts words"""
     return re.findall(r'\b[a-z]{2,}\b', text.lower())
 
 
@@ -36,9 +34,7 @@ def build_custom_stopwords(corpus, top_n=50):
 
 # Loading data and splitting it into features and labels, and training and validation
 def load_data():
-    """Load train and validation datasets"""
     print("Loading datasets...")
-    # Load the datasets
     base_path = "hf://datasets/stanfordnlp/sst2/"
     df_train = pd.read_parquet(base_path + splits["train"])
     df_val = pd.read_parquet(base_path + splits["validation"])
@@ -57,14 +53,9 @@ def load_data():
     
     return X_train, y_train, X_val, y_val
 
+# text processing and classification pipeline
 def create_text_pipeline(vectorizer_type="tfidf", stop_words=None):
-    """Create a text processing and classification pipeline
-    
-    Args:
-        vectorizer_type (str): Type of vectorizer to use - "tfidf" or "bow"
-        stop_words: None, 'english', or custom list of stopwords
-    """
-    # Common vectorizer parameters
+
     vectorizer_params = {
         'min_df': 5,
         'max_df': 0.5,
@@ -74,13 +65,11 @@ def create_text_pipeline(vectorizer_type="tfidf", stop_words=None):
         'stop_words': stop_words
     }
     
-    # Select vectorizer based on type
     if vectorizer_type.lower() == "tfidf":
         vectorizer = TfidfVectorizer(**vectorizer_params)
-    else:  # Default to Bag of Words
+    else:  
         vectorizer = CountVectorizer(**vectorizer_params_bow)
     
-    # Create a pipeline with preprocessing and model
     pipeline = Pipeline([
         ('vectorizer', vectorizer),
         ('classifier', LinearSVC(dual="auto", class_weight='balanced'))
@@ -88,45 +77,39 @@ def create_text_pipeline(vectorizer_type="tfidf", stop_words=None):
     
     return pipeline
 
+# Evaluate a specific configuration
 def evaluate_configuration(X_train, y_train, X_val, y_val, config):
-    """Evaluate a specific configuration"""
     vectorizer_type = config['vectorizer_type']
     stopwords_option = config['stopwords_option']
     stopwords_count = config.get('stopwords_count', 0)
     c_value = config['c_value']
     
-    # Prepare stopwords
     stop_words = None
     if stopwords_option == 'english':
         stop_words = 'english'
     elif stopwords_option == 'custom':
         stop_words = list(build_custom_stopwords(X_train, top_n=stopwords_count))
     
-    # Create pipeline
     pipeline = create_text_pipeline(vectorizer_type, stop_words)
     
-    # Set C value for LinearSVC
+    # C value for LinearSVC
     pipeline.named_steps['classifier'].C = c_value
-    pipeline.named_steps['classifier'].max_iter = 2000  # Higher iteration limit
+    pipeline.named_steps['classifier'].max_iter = 2000
     
-    # Train the model
     print(f"\nTraining model with configuration: {config}")
     start_time = time()
     pipeline.fit(X_train, y_train)
     train_time = time() - start_time
     print(f"Training completed in {train_time:.2f} seconds")
     
-    # Evaluate on validation set
     start_time = time()
     y_val_pred = pipeline.predict(X_val)
     pred_time = time() - start_time
     
-    # Calculate metrics
     val_accuracy = accuracy_score(y_val, y_val_pred)
     error_rate = 1 - val_accuracy
     mcc = matthews_corrcoef(y_val, y_val_pred)
     
-    # Generate classification report
     report = classification_report(y_val, y_val_pred, output_dict=True)
     
     results = {
@@ -148,10 +131,10 @@ def evaluate_configuration(X_train, y_train, X_val, y_val, config):
     
     return results
 
-# Here I got a quite alot of help from Claude 3.7
+# Search through different configurations to find the optimal one
+# Can't use GridsearchCV as I want the top n models stats and GridsearchCV only gives the CV scores.
 def grid_search_configurations(X_train, y_train, X_val, y_val):
-    """Search through different configurations to find the optimal one"""
-    # Define configuration grid
+
     vectorizer_types = ['bow', 'tfidf']
     stopwords_options = [None, 'english', 'custom']
     stopwords_counts = [10, 20, 30, 40, 50, 100, 200, 500]
@@ -162,9 +145,9 @@ def grid_search_configurations(X_train, y_train, X_val, y_val):
     best_config = None
     best_model = None
     
-    # Store full reports for each configuration
     all_reports = {}
-    
+
+    # Again, bit ugly but it works.
     for vectorizer_type in vectorizer_types:
         for stopwords_option in stopwords_options:
             if stopwords_option == 'custom':
@@ -215,9 +198,9 @@ def grid_search_configurations(X_train, y_train, X_val, y_val):
     return results, best_config, best_model, all_reports
 
 
-# extracting results to a file
+# Visualization
 def visualize_results(results):
-    # Extract data for visualization
+
     df_results = pd.DataFrame([
         {
             'vectorizer_type': r['config']['vectorizer_type'],
@@ -231,7 +214,6 @@ def visualize_results(results):
         for r in results
     ])
     
-    # Create a configuration string for each row
     df_results['config_str'] = df_results.apply(
         lambda row: f"{row['vectorizer_type']}_" + 
                    f"{row['stopwords_option']}_" + 
@@ -243,11 +225,9 @@ def visualize_results(results):
     # Sort by accuracy
     df_results = df_results.sort_values('accuracy')
     
-    # top-10 models by accuracy and mcc
     top10_acc = df_results.head(10)
     top10_mcc = df_results.sort_values('mcc', ascending=False).head(10)
     
-    # Export top models data to CSV
     top10_acc.to_csv('top10_models_by_accuracy.csv', index=False)
     top10_mcc.to_csv('top10_models_by_mcc.csv', index=False)
 
@@ -259,12 +239,10 @@ def evaluate_best_model(model, X_val, y_val):
 
     y_val_pred = model.predict(X_val)
     
-    # Confusion Matrix with visualization
     conf_matrix = confusion_matrix(y_val, y_val_pred)
     print("Confusion Matrix:")
     print(conf_matrix)
     
-    # Plot confusion matrix
     plt.figure(figsize=(8, 6))
     sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues',
                 xticklabels=['Negative', 'Positive'],
@@ -275,38 +253,13 @@ def evaluate_best_model(model, X_val, y_val):
     plt.tight_layout()
     plt.savefig('best_model_confusion_matrix.png')
     print("Confusion matrix saved")
-    
-    # Feature importance analysis
-    if hasattr(model['classifier'], 'coef_'):
-        feature_names = model['vectorizer'].get_feature_names_out()
-        coefficients = model['classifier'].coef_[0]
-        
-        # Get the top 15 most important features for each class
-        top_positive_idx = np.argsort(coefficients)[-15:]
-        top_negative_idx = np.argsort(coefficients)[:15]
-        
-        print("\nTop positive features:")
-        for idx in top_positive_idx:
-            print(f"{feature_names[idx]}: {coefficients[idx]:.4f}")
-        
-        print("\nTop negative features:")
-        for idx in top_negative_idx:
-            print(f"{feature_names[idx]}: {coefficients[idx]:.4f}")
             
     return conf_matrix
 
-# No need for the model, we are only interested in the metrics
-#def save_model(model, model_name='best_svm_model.pkl'):
-#    print(f"\nSaving best model as '{model_name}'...")
-#    joblib.dump(model, model_name)
-#    print("Model saved successfully.")
-
-
-# Every runs' report saved as json file
+# Every runs' report saved
 def save_reports(all_reports, filename='all_classification_reports.json'):
     import json
     
-    # Convert numpy values to Python types
     for config_name, report in all_reports.items():
         for class_name, metrics in report.items():
             if isinstance(metrics, dict):
@@ -318,37 +271,29 @@ def save_reports(all_reports, filename='all_classification_reports.json'):
     
     print(f"All classification reports saved to {filename}")
 
+# Saving model stats
 def save_all_models_report(df_results, filename='all_models_comparison.csv'):
     """Save all model results to a CSV file for further analysis"""
     df_results.sort_values('accuracy', ascending=False).to_csv(filename, index=False)
     print(f"Full models comparison saved to {filename}")
 
 def main():
-    print("Starting...")
     
-    # Load data
     X_train, y_train, X_val, y_val = load_data()
     
-    # Grid search across configurations
     results, best_config, best_model, all_reports = grid_search_configurations(X_train, y_train, X_val, y_val)
     
-    # Visualize results
     df_results = visualize_results(results)
     
-    # Evaluate best model in detail
     conf_matrix = evaluate_best_model(best_model, X_val, y_val)
     
-    # Save all classification reports
     save_reports(all_reports)
     
-    # Save full model comparison
     save_all_models_report(df_results)
     
-    # Find models with highest accuracy and MCC
     best_acc_config = df_results.sort_values('accuracy', ascending=False).iloc[0]
     best_mcc_config = df_results.sort_values('mcc', ascending=False).iloc[0]
     
-    # Final report
     print("\n===== Final Report =====")
     print("Best Configuration by Accuracy:")
     for key, value in best_config.items():
@@ -364,7 +309,6 @@ def main():
     print(f"  MCC: {best_mcc_config['mcc']:.4f}")
     print(f"  Accuracy: {best_mcc_config['accuracy']:.4f}")
     
-    # Analysis of optimal parameters
     print("\nParameter Analysis:")
     
     # Vectorizer type analysis
@@ -376,18 +320,6 @@ def main():
     stopwords_analysis = df_results.groupby('stopwords_option')['accuracy'].mean().reset_index()
     best_stopwords = stopwords_analysis.loc[stopwords_analysis['accuracy'].idxmax()]['stopwords_option']
     print(f"Best stopwords option: {best_stopwords} (avg accuracy: {stopwords_analysis['accuracy'].max():.4f})")
-    
-    # Custom stopwords count analysis (if relevant)
-    if 'custom' in df_results['stopwords_option'].values:
-        custom_df = df_results[df_results['stopwords_option'] == 'custom']
-        count_analysis = custom_df.groupby('stopwords_count')['accuracy'].mean().reset_index()
-        best_count = count_analysis.loc[count_analysis['accuracy'].idxmax()]['stopwords_count']
-        print(f"Best stopwords count: {int(best_count)} (avg accuracy: {count_analysis['accuracy'].max():.4f})")
-    
-    # C value analysis
-    c_analysis = df_results.groupby('c_value')['accuracy'].mean().reset_index()
-    best_c = c_analysis.loc[c_analysis['accuracy'].idxmax()]['c_value']
-    print(f"Best C value: {best_c} (avg accuracy: {c_analysis['accuracy'].max():.4f})")
     
     print("========================")
 
