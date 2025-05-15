@@ -85,6 +85,7 @@ def evaluate_configuration(X_train, y_train, X_val, y_val, config):
     stopwords_count = config.get('stopwords_count', 0)
     n_estimators = config['n_estimators']
     max_depth = config['max_depth']
+    min_samples_leaf = config['min_samples_leaf']
     
     stop_words = None
     if stopwords_option == 'english':
@@ -96,6 +97,7 @@ def evaluate_configuration(X_train, y_train, X_val, y_val, config):
     
     pipeline.named_steps['classifier'].n_estimators = n_estimators
     pipeline.named_steps['classifier'].max_depth = max_depth if max_depth > 0 else None
+    pipeline.named_steps['classifier'].min_samples_leaf = min_samples_leaf
     
     print(f"\nTraining model with configuration: {config}")
     start_time = time()
@@ -137,10 +139,11 @@ def evaluate_configuration(X_train, y_train, X_val, y_val, config):
 def grid_search_configurations(X_train, y_train, X_val, y_val):
 
     vectorizer_types = ['bow', 'tfidf']
-    stopwords_options = [None, 'english', 'custom']
-    stopwords_counts = [20, 30, 50]
-    n_estimators_values = [150]
-    max_depth_values = [0]  
+    stopwords_options = ['custom']
+    stopwords_counts = [10, 20, 30]
+    n_estimators_values = [100, 150]
+    max_depth_values = [0]
+    min_samples_leaf_values = [2, 3, 4, 5]
     
     results = []
     best_accuracy = 0
@@ -155,16 +158,43 @@ def grid_search_configurations(X_train, y_train, X_val, y_val):
             if stopwords_option == 'custom':
                 for stopwords_count in stopwords_counts:
                     for n_estimators in n_estimators_values:
+                        for min_samples_leaf in min_samples_leaf_values:
+                            for max_depth in max_depth_values:
+                                config = {
+                                    'vectorizer_type': vectorizer_type,
+                                    'stopwords_option': stopwords_option,
+                                    'stopwords_count': stopwords_count,
+                                    'n_estimators': n_estimators,
+                                    'max_depth': max_depth,
+                                    'min_samples_leaf': min_samples_leaf
+                                }
+                                
+                                config_name = f"{vectorizer_type}_{stopwords_option}_{stopwords_count}_n{n_estimators}_d{max_depth}_minS{min_samples_leaf}"
+                                print(f"\n{'='*50}")
+                                print(f"Evaluating configuration: {config_name}")
+                                print(f"{'='*50}")
+                                
+                                result = evaluate_configuration(X_train, y_train, X_val, y_val, config)
+                                results.append(result)
+                                all_reports[config_name] = result['report']
+                                
+                                if result['accuracy'] > best_accuracy:
+                                    best_accuracy = result['accuracy']
+                                    best_config = config
+                                    best_model = result['pipeline']
+            else:
+                for n_estimators in n_estimators_values:
+                    for min_samples_leaf in min_samples_leaf_values:
                         for max_depth in max_depth_values:
                             config = {
                                 'vectorizer_type': vectorizer_type,
                                 'stopwords_option': stopwords_option,
-                                'stopwords_count': stopwords_count,
                                 'n_estimators': n_estimators,
-                                'max_depth': max_depth
+                                'max_depth': max_depth,
+                                'min_samples_leaf': min_samples_leaf
                             }
                             
-                            config_name = f"{vectorizer_type}_{stopwords_option}_{stopwords_count}_n{n_estimators}_d{max_depth}"
+                            config_name = f"{vectorizer_type}_{stopwords_option}_n{n_estimators}_d{max_depth}"
                             print(f"\n{'='*50}")
                             print(f"Evaluating configuration: {config_name}")
                             print(f"{'='*50}")
@@ -177,29 +207,6 @@ def grid_search_configurations(X_train, y_train, X_val, y_val):
                                 best_accuracy = result['accuracy']
                                 best_config = config
                                 best_model = result['pipeline']
-            else:
-                for n_estimators in n_estimators_values:
-                    for max_depth in max_depth_values:
-                        config = {
-                            'vectorizer_type': vectorizer_type,
-                            'stopwords_option': stopwords_option,
-                            'n_estimators': n_estimators,
-                            'max_depth': max_depth
-                        }
-                        
-                        config_name = f"{vectorizer_type}_{stopwords_option}_n{n_estimators}_d{max_depth}"
-                        print(f"\n{'='*50}")
-                        print(f"Evaluating configuration: {config_name}")
-                        print(f"{'='*50}")
-                        
-                        result = evaluate_configuration(X_train, y_train, X_val, y_val, config)
-                        results.append(result)
-                        all_reports[config_name] = result['report']
-                        
-                        if result['accuracy'] > best_accuracy:
-                            best_accuracy = result['accuracy']
-                            best_config = config
-                            best_model = result['pipeline']
     
     return results, best_config, best_model, all_reports
 
@@ -265,7 +272,7 @@ def evaluate_best_model(model, X_val, y_val):
     plt.ylabel('True labels')
     plt.title('Confusion Matrix for Best RF Model')
     plt.tight_layout()
-    plt.savefig('best_rf_model_confusion_matrix.png')
+    plt.savefig("best_rf_model_confusion_matrix.pdf", format='pdf',   bbox_inches='tight',  dpi=600,   transparent=True)
     print("Confusion matrix saved")
             
     return conf_matrix

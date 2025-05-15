@@ -251,7 +251,7 @@ def evaluate_best_model(model, X_val, y_val):
     plt.ylabel('True labels')
     plt.title('Confusion Matrix for Best Model')
     plt.tight_layout()
-    plt.savefig('best_model_confusion_matrix.png')
+    plt.savefig("best_model_confusion_matrix.pdf", format='pdf',   bbox_inches='tight',  dpi=600,   transparent=True)
     print("Confusion matrix saved")
             
     return conf_matrix
